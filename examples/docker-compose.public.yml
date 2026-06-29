@@ -1,0 +1,16 @@
+services:
+  daycare:
+    image: ghcr.io/authgrid-io/depdaycare:latest
+    ports:
+      - "4873:4873"
+    environment:
+      DAYCARE_LISTEN_ADDR: ":4873"
+      DAYCARE_UPSTREAM_REGISTRY: "https://registry.npmjs.org"
+      DAYCARE_DATA_DIR: "/var/lib/daycare"
+      DAYCARE_BLOB_DRIVER: "local"
+    volumes:
+      - daycare-data:/var/lib/daycare
+    restart: unless-stopped
+
+volumes:
+  daycare-data:
