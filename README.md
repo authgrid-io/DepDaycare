@@ -38,7 +38,7 @@ consulted first (see below).
 
 ## Rules
 
-Rules are authored in a YAML file (`rules.yaml`) and apply in `guard` and
+Rules are authored in a YAML file (`rules.npm.yaml` by default) and apply in `guard` and
 `lockdown`. A version is admissible only if it passes **every** enabled rule
 (AND). Each rule has global defaults plus per-package overrides (deep-merged).
 
@@ -55,7 +55,7 @@ external-source failures (min_downloads) are governed by `on_error` (default
 `allow`, with stale-cache fallback).
 
 ```yaml
-# rules.yaml
+# rules.npm.yaml
 version: 1
 rules:
   cooloff:       { enabled: true,  min_age_days: 14, on_missing_data: block }
@@ -163,7 +163,7 @@ docker compose exec daycare daycare allow add <pkg>
 docker compose exec daycare daycare audit
 ```
 
-Edit `rules.yaml` inside the volume (or `docker cp` one in) and run
+Edit `rules.npm.yaml` inside the volume (or `docker cp` one in) and run
 `daycare rules reload`.
 
 The image is built on Google **distroless** (`gcr.io/distroless/static-debian12:nonroot`)
@@ -246,7 +246,7 @@ with every value overridable by a `DAYCARE_*` environment variable (env wins).
 | `control_socket` | `DAYCARE_CONTROL_SOCKET` | `/var/run/daycare.sock` | admin control socket (CLI ↔ server); path ≤ 107 bytes |
 | `upstream_registry` | `DAYCARE_UPSTREAM_REGISTRY` | `https://registry.npmjs.org` | upstream npm registry |
 | `data_dir` | `DAYCARE_DATA_DIR` | `/var/lib/daycare` | state + blob root |
-| `rules_file` | `DAYCARE_RULES_FILE` | `<data_dir>/rules.yaml` | policy file |
+| `rules_file` | `DAYCARE_RULES_FILE` | `<data_dir>/rules.npm.yaml` | policy file |
 | `downloads_api_url` | `DAYCARE_DOWNLOADS_API_URL` | `https://api.npmjs.org` | downloads-count source |
 | `downloads_cache_ttl` | `DAYCARE_DOWNLOADS_CACHE_TTL` | `12h` | download-count cache TTL |
 | `blob_store.driver` | `DAYCARE_BLOB_DRIVER` | `local` | `local` or `s3` |
@@ -266,21 +266,28 @@ so enabling the cache does not affect security or correctness — blocked versio
 still filtered from what npm sees, even if the raw packument is cached.
 
 Enable with `packument_cache.enabled: true` and optionally set `packument_cache.ttl`
-(default `5m`). Cached packuments are stored under `<data_dir>/cache/packuments/` as
+(default `5m`). Cached packuments are stored under `<data_dir>/cache/npm/packuments/` as
 JSON files, one per package.
 
 ### State layout (under `data_dir`)
 
 ```
-state.json        # current mode
-rules.yaml        # policy (source of truth)
-allowlist.json    # lockdown allowlist
-overrides.json    # force-allow / force-deny entries
-audit.jsonl       # append-only audit log
+state.npm.json         # current mode (per ecosystem)
+rules.npm.yaml         # npm policy (source of truth)
+allowlist.npm.json     # npm lockdown allowlist
+overrides.npm.json     # npm force-allow / force-deny entries
+audit.jsonl            # append-only audit log (all ecosystems; each entry tagged)
 blobs/
-  <name>/-/<file>.tgz            # pinned tarball (immutable, integrity-verified)
-  <name>/-/<file>.tgz.meta.json  # pin metadata sidecar
+  npm/<name>/-/<file>.tgz            # pinned tarball (immutable, integrity-verified)
+  npm/<name>/-/<file>.tgz.meta.json  # pin metadata sidecar
+cache/npm/packuments/  # optional packument cache
+cache/npm/downloads/   # download-count cache
 ```
+
+> Data is namespaced by ecosystem (`npm` today) so additional ecosystems can be
+> added without colliding. **Upgrading a pre-namespace deployment:** wipe the
+> `daycare-data` volume (or delete the old un-namespaced files) and re-pin —
+> there is no in-place migration.
 
 The CLI writes these files directly (so `mode set` etc. work even with the server
 down); a running server is notified to hot-reload. The server is the only component
@@ -462,14 +469,14 @@ keys in the task definition. Attach this policy to the task role:
 #### Config and state
 
 Pinned artifacts live in S3. The remaining state lives under `data_dir`
-(`/var/lib/daycare` by default): `state.json` (mode), `rules.yaml`,
-`allowlist.json`, `overrides.json`, `audit.jsonl`, and the on-disk caches.
+(`/var/lib/daycare` by default): `state.npm.json` (mode), `rules.npm.yaml`,
+`allowlist.npm.json`, `overrides.npm.json`, `audit.jsonl`, and the on-disk caches.
 
 Two options for that state:
 
-- **Env-only / ephemeral (simplest):** bake `rules.yaml` into the image (or
-  pull it at startup) and accept that `state.json`/`allowlist.json`/
-  `overrides.json`/`audit.jsonl` reset when a task is replaced. Artifacts are
+- **Env-only / ephemeral (simplest):** bake `rules.npm.yaml` into the image (or
+  pull it at startup) and accept that `state.npm.json`/`allowlist.npm.json`/
+  `overrides.npm.json`/`audit.jsonl` reset when a task is replaced. Artifacts are
   safe in S3, so a fresh task simply re-pins on demand. Suitable for a
   rules-only `guard` deployment.
 - **Persistent:** mount an EFS volume at `data_dir` so mode, allowlist,
@@ -497,10 +504,10 @@ when a `daycare` CLI command reaches **that same container's** socket.
   `aws ecs execute-command` launches `/bin/sh`, so it cannot drive the CLI here.
   Apply admin/policy changes by updating the backing files and rolling the
   service:
-  1. Update the file under the EFS-mounted `data_dir` (`state.json`,
-     `allowlist.json`, `overrides.json`) — for example via a one-off task whose
+  1. Update the file under the EFS-mounted `data_dir` (`state.npm.json`,
+     `allowlist.npm.json`, `overrides.npm.json`) — for example via a one-off task whose
      command override is `daycare mode set guard`, sharing the same EFS
-     `data_dir` — or rebuild the image with an updated baked `rules.yaml`.
+     `data_dir` — or rebuild the image with an updated baked `rules.npm.yaml`.
   2. Force a new deployment (`aws ecs update-service --force-new-deployment`); the
      replacement task reads the latest files at startup.
 
@@ -519,7 +526,7 @@ Do not run a second long-lived daycare instance just to issue admin commands.
 daycare serve                              run the proxy server
 daycare healthcheck                        ping the running server (exit 0 = healthy)
 daycare mode show | set <mode>             bypass | guard | learn | lockdown
-daycare rules check | reload               validate / hot-reload rules.yaml
+daycare rules check | reload               validate / hot-reload rules.npm.yaml
 daycare allow add|rm <name[@version]>      manage the lockdown allowlist
 daycare allow list
 daycare override allow|deny <name[@version]> --reason <r> [--ttl <Nd|dur>]
