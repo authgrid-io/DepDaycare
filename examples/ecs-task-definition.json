@@ -1,0 +1,47 @@
+{
+  "family": "daycare",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "taskRoleArn": "arn:aws:iam::<account>:role/daycare-task",
+  "executionRoleArn": "arn:aws:iam::<account>:role/daycare-exec",
+  "containerDefinitions": [
+    {
+      "name": "daycare",
+      "image": "ghcr.io/authgrid-io/depdaycare:latest",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 4873, "protocol": "tcp" },
+        { "containerPort": 4874, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "DAYCARE_NPM_ENABLED", "value": "true" },
+        { "name": "DAYCARE_NPM_LISTEN_ADDR", "value": ":4873" },
+        { "name": "DAYCARE_PYPI_ENABLED", "value": "true" },
+        { "name": "DAYCARE_PYPI_LISTEN_ADDR", "value": ":4874" },
+        { "name": "DAYCARE_PUBLIC_BASE_URL", "value": "https://npm.corp.com" },
+        { "name": "DAYCARE_BLOB_DRIVER", "value": "s3" },
+        { "name": "DAYCARE_S3_BUCKET", "value": "corp-daycare-artifacts" },
+        { "name": "DAYCARE_S3_REGION", "value": "us-east-1" },
+        { "name": "DAYCARE_S3_CREDENTIALS", "value": "iam" },
+        { "name": "DAYCARE_PACKUMENT_CACHE_ENABLED", "value": "true" }
+      ],
+      "healthCheck": {
+        "command": ["CMD", "/usr/local/bin/daycare", "healthcheck"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 5
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/daycare",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "daycare"
+        }
+      }
+    }
+  ]
+}

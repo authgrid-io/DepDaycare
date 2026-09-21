@@ -1,15 +1,33 @@
+# DepDaycare — single container, npm gate (:4873) + PyPI gate (:4874).
+# Run the prebuilt public image with no build step:
+#
+#   docker compose -f docker-compose.public.yml up -d
+#
+# Point clients at it:
+#   npm install --registry http://localhost:4873 <pkg>
+#   pip install --index-url http://localhost:4874/simple/ <pkg>
+#
+# Both gates start in `bypass` (transparent passthrough). To enforce policy,
+# copy a rules file in and switch a gate to guard:
+#   docker compose cp rules.npm.yaml daycare:/var/lib/daycare/rules.npm.yaml
+#   docker compose exec daycare daycare npm rules reload
+#   docker compose exec daycare daycare npm mode set guard
 services:
   daycare:
     image: ghcr.io/authgrid-io/depdaycare:latest
     ports:
-      - "4873:4873"
+      - "4873:4873"        # npm gate
+      - "4874:4874"        # PyPI gate
     environment:
-      DAYCARE_LISTEN_ADDR: ":4873"
+      DAYCARE_NPM_ENABLED: "true"
+      DAYCARE_NPM_LISTEN_ADDR: ":4873"
+      DAYCARE_PYPI_ENABLED: "true"       # set "false" to run npm only (then :4874 never opens)
+      DAYCARE_PYPI_LISTEN_ADDR: ":4874"
       DAYCARE_UPSTREAM_REGISTRY: "https://registry.npmjs.org"
       DAYCARE_DATA_DIR: "/var/lib/daycare"
-      DAYCARE_BLOB_DRIVER: "local"
+      DAYCARE_BLOB_DRIVER: "local"       # use "s3" for off-device / multi-instance storage
     volumes:
-      - daycare-data:/var/lib/daycare
+      - daycare-data:/var/lib/daycare    # all state: mode, rules, allowlist, audit, pinned blobs
     restart: unless-stopped
 
 volumes:

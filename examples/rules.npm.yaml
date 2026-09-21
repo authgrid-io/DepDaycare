@@ -1,0 +1,19 @@
+# Example npm policy for DepDaycare's guard / lockdown modes.
+# Copy into the data volume and reload:
+#   docker compose cp rules.npm.yaml daycare:/var/lib/daycare/rules.npm.yaml
+#   docker compose exec daycare daycare npm rules reload
+#
+# A version is admissible only if it passes EVERY enabled rule (AND).
+# on_missing_data: block => fail closed when the rule can't be evaluated.
+version: 1
+rules:
+  cooloff:       { enabled: true,  min_age_days: 14, on_missing_data: block }   # block releases younger than 14 days
+  max_age:       { enabled: false, max_age_days: 365, on_missing_data: block }  # off: don't force staying patched
+  deprecated:    { enabled: true }                                             # block npm-deprecated versions
+  license:       { enabled: true, mode: allowlist, spdx: [MIT, ISC, Apache-2.0, BSD-3-Clause, BSD-2-Clause], on_missing_data: block }
+  min_downloads: { enabled: true, threshold: 1000, window: last-week, on_error: allow }  # npm-only; tolerate source outages
+packages:
+  internal-tool:                 # per-package overrides (deep-merged onto the globals above)
+    cooloff: { min_age_days: 0 }
+  some-weird-dep:
+    license: { enabled: false }

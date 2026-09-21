@@ -1,0 +1,19 @@
+# Example PyPI policy for DepDaycare's guard / lockdown modes.
+# Copy into the data volume and reload:
+#   docker compose cp rules.pypi.yaml daycare:/var/lib/daycare/rules.pypi.yaml
+#   docker compose exec daycare daycare pypi rules reload
+#
+# Same structure as rules.npm.yaml, with two differences:
+#   - min_downloads is NOT available for PyPI (omit it).
+#   - deprecated blocks PEP 592 "yanked" releases.
+# License is read from PEP 639 license-expression first, then trove classifiers,
+# then the legacy `license` field.
+version: 1
+rules:
+  cooloff:    { enabled: true,  min_age_days: 14, on_missing_data: block }
+  max_age:    { enabled: false, max_age_days: 365, on_missing_data: block }
+  deprecated: { enabled: true }   # blocks yanked releases
+  license:    { enabled: true, mode: allowlist, spdx: [MIT, ISC, Apache-2.0, BSD-3-Clause, BSD-2-Clause, PSF-2.0], on_missing_data: block }
+packages:
+  internal-tool:                  # per-package overrides (deep-merged)
+    cooloff: { min_age_days: 0 }
