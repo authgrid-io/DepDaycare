@@ -358,6 +358,7 @@ with every value overridable by a `DAYCARE_*` environment variable (env wins).
 | `data_dir` | `DAYCARE_DATA_DIR` | `/var/lib/daycare` | state + blob root |
 | `audit_max_size` | `DAYCARE_AUDIT_MAX_SIZE` | `20MB` | max size of `audit.jsonl` before rotation |
 | `audit_max_backups` | `DAYCARE_AUDIT_MAX_BACKUPS` | `30` | number of rotated audit log copies to keep |
+| `log_format` | `DAYCARE_LOG_FORMAT` | `json` | operational log format on stderr: `json` (one object per line) or `text` (key=value) |
 | `downloads_api_url` | `DAYCARE_DOWNLOADS_API_URL` | `https://api.npmjs.org` | downloads-count source |
 | `downloads_cache_ttl` | `DAYCARE_DOWNLOADS_CACHE_TTL` | `12h` | download-count cache TTL |
 | `blob_store.driver` | `DAYCARE_BLOB_DRIVER` | `local` | `local` or `s3` |
