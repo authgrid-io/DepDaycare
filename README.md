@@ -485,6 +485,112 @@ DAYCARE_S3_TEST_USE_SSL=false \
   go test -tags s3integration ./internal/store/
 ```
 
+### State sync (control-plane files in S3)
+
+`state_sync` mirrors the control-plane files (`state.<gate>.json`,
+`rules.<gate>.yaml`, `allowlist.<gate>.json`, `overrides.<gate>.json`) to an
+S3-compatible bucket and restores them at boot, before any gate starts. It is
+what makes a deployment with no persistent volume (ECS Fargate, Kubernetes
+without a PVC) safe; see [Running on ephemeral compute](#running-on-ephemeral-compute)
+for the design. It is **off by default**.
+
+**Configuration block:**
+
+```yaml
+state_sync:
+  enabled: true
+  driver: s3                       # s3 or local
+  s3:
+    endpoint: s3.ca-central-1.amazonaws.com
+    region: ca-central-1
+    bucket: my-daycare-state
+    prefix: state/                 # trailing slash required; see below
+    credentials: iam               # or static, with access_key/secret_key
+```
+
+**Environment variables** (env wins over YAML):
+
+| YAML field | Env var |
+|------------|---------|
+| `state_sync.enabled` | `DAYCARE_STATE_SYNC_ENABLED` (true/false) |
+| `state_sync.driver` | `DAYCARE_STATE_SYNC_DRIVER` (s3/local) |
+| `state_sync.s3.endpoint` | `DAYCARE_STATE_SYNC_S3_ENDPOINT` |
+| `state_sync.s3.region` | `DAYCARE_STATE_SYNC_S3_REGION` |
+| `state_sync.s3.bucket` | `DAYCARE_STATE_SYNC_S3_BUCKET` |
+| `state_sync.s3.prefix` | `DAYCARE_STATE_SYNC_S3_PREFIX` |
+| `state_sync.s3.use_ssl` | `DAYCARE_STATE_SYNC_S3_USE_SSL` (true/false, default true) |
+| `state_sync.s3.credentials` | `DAYCARE_STATE_SYNC_S3_CREDENTIALS` (static/iam) |
+| `state_sync.s3.access_key` | `DAYCARE_STATE_SYNC_S3_ACCESS_KEY` |
+| `state_sync.s3.secret_key` | `DAYCARE_STATE_SYNC_S3_SECRET_KEY` |
+| `state_sync.local.path` | `DAYCARE_STATE_SYNC_LOCAL_PATH` (driver=local only) |
+
+These are separate from the `DAYCARE_S3_*` variables above, which configure the
+artifact blob store. The two may point at the same bucket under different
+prefixes, or at different buckets.
+
+**ECS task definition (copy-paste):**
+
+```json
+{ "name": "DAYCARE_STATE_SYNC_ENABLED",        "value": "true" },
+{ "name": "DAYCARE_STATE_SYNC_DRIVER",         "value": "s3" },
+{ "name": "DAYCARE_STATE_SYNC_S3_BUCKET",      "value": "<bucket>" },
+{ "name": "DAYCARE_STATE_SYNC_S3_REGION",      "value": "<region>" },
+{ "name": "DAYCARE_STATE_SYNC_S3_PREFIX",      "value": "state/" },
+{ "name": "DAYCARE_STATE_SYNC_S3_ENDPOINT",    "value": "s3.<region>.amazonaws.com" },
+{ "name": "DAYCARE_STATE_SYNC_S3_CREDENTIALS", "value": "iam" }
+```
+
+The task role needs `s3:GetObject`, `s3:PutObject` and `s3:ListBucket` on
+`<bucket>/<prefix>*`, plus `kms:Decrypt` and `kms:GenerateDataKey` if the bucket
+uses a customer-managed key.
+
+**Object layout.** Keys are `<prefix>` + the file's basename. There are no
+per-ecosystem folders; the ecosystem is in the filename, and both gates share one
+prefix:
+
+```
+s3://<bucket>/state/state.npm.json
+s3://<bucket>/state/rules.npm.yaml
+s3://<bucket>/state/allowlist.npm.json
+s3://<bucket>/state/overrides.npm.json
+s3://<bucket>/state/state.pypi.json       (PyPI gate, if enabled)
+s3://<bucket>/state/rules.pypi.yaml
+```
+
+**Bootstrapping a fresh bucket.** The gate never creates `rules.<gate>.yaml`
+and will refuse to start under `state_sync` without both it and
+`state.<gate>.json` present and valid (see
+[Startup guard](#startup-guard-both-control-files-must-be-present-and-valid-after-restore)).
+The [Terraform in this repo](terraform/) seeds both; with your own Terraform or
+a hand-built task definition, upload them once before the first boot:
+
+```bash
+echo '{"mode":"guard"}' > state.npm.json
+aws s3 cp state.npm.json          s3://<bucket>/state/state.npm.json
+aws s3 cp examples/rules.npm.yaml s3://<bucket>/state/rules.npm.yaml
+```
+
+Add `--sse aws:kms --sse-kms-key-id <arn>` to each copy if the bucket enforces a
+KMS key. Repeat with `state.pypi.json` and `examples/rules.pypi.yaml` if the
+PyPI gate is enabled.
+
+**Updating rules on Fargate.** Upload the edited YAML to the same key, then
+`aws ecs update-service --force-new-deployment`; the replacement task restores it
+at boot and logs `state_sync restored files from remote`. `daycare <gate> rules
+reload` cannot do this from a one-off task: it pulls onto that task's own disk
+and the gate's control socket is not reachable from another container.
+
+**Pitfalls:**
+
+- **The prefix needs its trailing slash.** Keys are built by string
+  concatenation, so `state` produces an object named `staterules.npm.yaml`.
+- **Sync off looks like a working gate.** If `DAYCARE_STATE_SYNC_ENABLED` is
+  missing, the gate ignores the bucket entirely, logs `no rules file; starting
+  with empty policy`, and runs in `bypass` with every rule disabled, proxying
+  everything unfiltered. With sync on, that same missing file stops the gate
+  from starting instead. Seeing the "no rules file" line on a deployment that
+  should be syncing means the variables are not reaching the task.
+
 ---
 
 ## Deploying
@@ -595,14 +701,17 @@ Pinned artifacts live in S3. The remaining state lives under `data_dir`
 
 Two options for that state:
 
-- **Env-only / ephemeral (simplest):** bake `rules.npm.yaml` into the image (or
-  pull it at startup) and accept that `state.npm.json`/`allowlist.npm.json`/
-  `overrides.npm.json`/`audit.jsonl` reset when a task is replaced. Artifacts are
-  safe in S3, so a fresh task simply re-pins on demand. Suitable for a
-  rules-only `guard` deployment.
-- **Persistent:** mount an EFS volume at `data_dir` so mode, allowlist,
-  overrides, and the audit log survive task restarts. Required if you use
-  `learn`/`lockdown` or want a durable audit trail.
+- **State sync (recommended):** set the `DAYCARE_STATE_SYNC_*` variables so
+  mode, rules, allowlist and overrides live in an S3 bucket and are restored at
+  every boot. No volume needed. See
+  [State sync](#state-sync-control-plane-files-in-s3) for the variables, the IAM
+  needed, and how to seed the bucket.
+- **Env-only / ephemeral:** bake `rules.npm.yaml` into the image and accept that
+  `state.npm.json`/`allowlist.npm.json`/`overrides.npm.json`/`audit.jsonl` reset
+  when a task is replaced. Artifacts are safe in S3, so a fresh task simply
+  re-pins on demand. Suitable only for a rules-only `guard` deployment.
+- **Persistent volume:** mount an EFS volume at `data_dir` so mode, allowlist,
+  overrides, and the audit log survive task restarts.
   The container runs as uid 65532, so an EFS-mounted `data_dir` must be writable
   by uid 65532 (set the EFS access-point POSIX user/owner accordingly).
 
