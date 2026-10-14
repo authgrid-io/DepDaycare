@@ -365,6 +365,7 @@ with every value overridable by a `DAYCARE_*` environment variable (env wins).
 | `blob_store.local.path` | `DAYCARE_BLOB_LOCAL_PATH` | `<data_dir>/blobs` | local artifact directory |
 | `packument_cache.enabled` | `DAYCARE_PACKUMENT_CACHE_ENABLED` | `false` | enable raw packument caching |
 | `packument_cache.ttl` | `DAYCARE_PACKUMENT_CACHE_TTL` | `5m` | packument cache TTL |
+| `metadata_concurrency` | `DAYCARE_METADATA_CONCURRENCY` | `8` | cap on in-flight metadata requests across all gates; `0` disables |
 
 ### Packument cache
 
@@ -919,9 +920,10 @@ comes back if it is still on this gate's local disk.
 
 Peak memory is **not** a function of how many packages you allowlist — the
 in-memory allowlist is on the order of a hundred bytes per package. It is a
-function of how many artifacts are being fetched *cold* at the same time.
+function of how many artifacts are being fetched *cold*, and how many package
+metadata documents are being processed, at the same time.
 
-Two things bound it:
+Three things bound it:
 
 - **Artifact verification streams.** A cache miss is spooled to a temp file
   under `<data_dir>/cache/<gate>/spool` while being hashed in the same pass,
@@ -931,6 +933,17 @@ Two things bound it:
   fetches are not coalesced, so N concurrent cold fetches cost N times that,
   on the same volume whose exhaustion breaks control-plane writes (see
   `terraform/README.md`).
+- **Install clients get the abbreviated packument, decoded as a stream.** npm,
+  pnpm and yarn ask for `application/vnd.npm.install-v1+json`; the gate still
+  fetches the full upstream document (the rules need publish times and
+  licenses), but reads it token by token and keeps only the install fields, so
+  a 30 MB packument like `next` no longer costs hundreds of MB per request.
+  Clients that ask for plain JSON (`npm view`, curl) get the full document as
+  before. Concurrent metadata work is capped by `metadata_concurrency`
+  (default 8) across both gates. A slot covers only the decode and render,
+  never the write to the client; the upstream wait and the client write are
+  each bounded to two minutes, so a stalled registry or a client that stops
+  reading cannot hold a slot or a rendered body indefinitely.
 - **The Go memory limit is set from the container's cgroup ceiling** at startup,
   to 85% of it, so the runtime collects hard rather than growing into an OOM
   kill. Set `GOMEMLIMIT` yourself to override; the gate logs which it did on the
