@@ -355,6 +355,7 @@ with every value overridable by a `DAYCARE_*` environment variable (env wins).
 | `tls.cert_file` | `DAYCARE_TLS_CERT_FILE` | _(empty)_ | PEM certificate path (required when `tls.enabled`) |
 | `tls.key_file` | `DAYCARE_TLS_KEY_FILE` | _(empty)_ | PEM key path (required when `tls.enabled`) |
 | `upstream_registry` | `DAYCARE_UPSTREAM_REGISTRY` | `https://registry.npmjs.org` | upstream npm registry |
+| `npm_pass_upstream_tarball_urls` | `DAYCARE_NPM_PASS_UPSTREAM_TARBALL_URLS` | `false` | serve upstream `dist.tarball` URLs instead of daycare URLs (see [Lockfile `resolved` URLs](#lockfile-resolved-urls)) |
 | `data_dir` | `DAYCARE_DATA_DIR` | `/var/lib/daycare` | state + blob root |
 | `audit_max_size` | `DAYCARE_AUDIT_MAX_SIZE` | `20MB` | max size of `audit.jsonl` before rotation |
 | `audit_max_backups` | `DAYCARE_AUDIT_MAX_BACKUPS` | `30` | number of rotated audit log copies to keep |
@@ -1101,6 +1102,34 @@ Or persistently, in `.npmrc`:
 ```
 registry=http://localhost:4873/
 ```
+
+### Lockfile `resolved` URLs
+
+By default daycare rewrites every `dist.tarball` in npm metadata to point at
+itself, so `package-lock.json` records `resolved` URLs on the daycare host.
+Pipelines that cannot reach daycare then fail on `npm ci`.
+
+Setting `npm_pass_upstream_tarball_urls: true` leaves `dist.tarball` as the
+upstream URL. Version filtering is unchanged: only admitted versions appear in
+metadata, and integrity hashes are identical either way.
+
+The trade-off is that the tarball URL is also the URL the client downloads
+from. npm 9+ with the default `replace-registry-host=npmjs` swaps a
+`registry.npmjs.org` host for its configured `registry`, so those clients still
+download through daycare. Older npm, yarn, pnpm, `replace-registry-host=never`,
+or an `upstream_registry` other than `registry.npmjs.org` download tarballs
+**directly from upstream**, bypassing daycare's tarball check, artifact cache,
+and tarball audit events, and fail where upstream is unreachable.
+
+An alternative that needs no daycare change: in the external pipeline, set
+
+```
+registry=https://registry.npmjs.org/
+replace-registry-host=always
+```
+
+and npm (9+) rewrites the daycare host in existing `resolved` URLs to the
+public registry.
 
 ## Using with pip
 
